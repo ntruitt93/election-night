@@ -14,7 +14,37 @@ const FREEZE_AT = Date.parse("2026-11-04T00:00:00Z");
 const CACHE_SECONDS = 120;
 const SNAPSHOT_KEY = "forecast-snapshot";
 
-export async function handleForecast(env, ctx) {
+export async function handleForecast(env, ctx, url) {
+  // /api/forecast?debug=1 shows what Kalshi returned for each race (no caching).
+  if (url && url.searchParams.has("debug")) {
+    const out = {};
+    for (const [st, races] of Object.entries(EVENTS)) {
+      for (const [race, ticker] of Object.entries(races)) {
+        try {
+          const ev = await fetchEvent(ticker);
+          out[`${st}-${race}`] = {
+            ticker,
+            topLevelKeys: Object.keys(ev || {}),
+            markets: marketsOf(ev).map((m) => ({
+              ticker: m.ticker,
+              yes_sub_title: m.yes_sub_title,
+              status: m.status,
+              yes_bid_dollars: m.yes_bid_dollars,
+              yes_ask_dollars: m.yes_ask_dollars,
+              last_price_dollars: m.last_price_dollars,
+              yes_bid: m.yes_bid,
+              last_price: m.last_price,
+            })),
+            summary: summarize(ev),
+          };
+        } catch (err) {
+          out[`${st}-${race}`] = { ticker, error: String(err.message || err) };
+        }
+      }
+    }
+    return json(out);
+  }
+
   const store = env.TALLY ? env.TALLY.get(env.TALLY.idFromName("tonight")) : null;
   const now = Date.now();
 
@@ -28,12 +58,12 @@ export async function handleForecast(env, ctx) {
   let data;
   const hit = await cache.match(key);
   if (hit) data = await hit.json();
-  else {
-    data = await fetchAll();
-    ctx.waitUntil(cache.put(key, new Response(JSON.stringify(data), { headers: { "Cache-Control": `public, max-age=${CACHE_SECONDS}` } })));
-  }
+  else data = await fetchAll();
 
   const usable = Object.values(data.states).some((s) => Object.values(s).some((r) => r && r.D != null));
+  if (!hit && usable) {
+    ctx.waitUntil(cache.put(key, new Response(JSON.stringify(data), { headers: { "Cache-Control": `public, max-age=${CACHE_SECONDS}` } })));
+  }
   if (store && usable && now < FREEZE_AT) {
     ctx.waitUntil(store.putValue(SNAPSHOT_KEY, data).catch(() => {}));
   }
@@ -93,11 +123,28 @@ function marketChance(m) {
   return NaN;
 }
 
+// Markets can arrive at the top level or nested inside the event; use whichever has them.
+function marketsOf(ev) {
+  const top = (ev && Array.isArray(ev.markets) && ev.markets) || [];
+  const nested = (ev && ev.event && Array.isArray(ev.event.markets) && ev.event.markets) || [];
+  return top.length ? top : nested;
+}
+
+function partyOf(m) {
+  const t = String(m.ticker || "").toUpperCase();
+  const suffix = (t.match(/-(D|R|DEM|REP|DEMOCRAT|REPUBLICAN)$/) || [])[1];
+  if (suffix) return suffix[0];
+  const text = `${m.yes_sub_title || ""} ${m.subtitle || ""} ${m.title || ""}`;
+  if (/democrat/i.test(text)) return "D";
+  if (/republican/i.test(text)) return "R";
+  return null;
+}
+
 export function summarize(ev) {
-  const markets = (ev && (ev.markets || (ev.event && ev.event.markets))) || [];
+  const markets = marketsOf(ev);
   const out = { D: null, R: null, names: {} };
   for (const m of markets) {
-    const party = (String(m.ticker || "").match(/-([DR])$/) || [])[1];
+    const party = partyOf(m);
     if (!party) continue;
     const p = marketChance(m);
     if (Number.isFinite(p)) out[party] = p;

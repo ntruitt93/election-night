@@ -24,7 +24,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/api/forecast") {
       try {
-        return await handleForecast(env, ctx);
+        return await handleForecast(env, ctx, url);
       } catch (err) {
         return json({ error: String(err && err.message ? err.message : err) }, 502);
       }
