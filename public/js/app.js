@@ -163,7 +163,10 @@ async function loadForecast() {
   try {
     const res = await fetch("/api/forecast", { cache: "no-store" });
     if (!res.ok) return;
-    app.forecast = await res.json();
+    const body = await res.json();
+    const usable = body && body.states && Object.values(body.states).some((s) => Object.values(s).some((r) => r && r.D != null));
+    if (!usable) return; // try again on the next refresh
+    app.forecast = body;
     app.forecastAt = Date.now();
   } catch {}
 }
