@@ -699,20 +699,33 @@ function defaultRace(races) {
   );
 }
 
+const HOUSE_LIST = "house-all"; // pseudo race id: the list of every House district
+
 async function renderState(key) {
   const d = app.data[key];
   const st = STATES[key];
   const races = (d && d.races) || [];
-  let race = races.find((r) => r.id === app.selected[key]);
-  if (!race) {
+  const houseRaces = races.filter((r) => r.category === "house");
+  const showHouseList = app.selected[key] === HOUSE_LIST && houseRaces.length > 0;
+  let race = showHouseList ? null : races.find((r) => r.id === app.selected[key]);
+  if (!race && !showHouseList) {
     race = defaultRace(races);
     // Keep a race picked from a link until the data that contains it arrives.
     if (race) app.selected[key] = race.id;
   }
 
   const groups = CATEGORY_ORDER.map((cat) => [cat, races.filter((r) => r.category === cat)]).filter(([, rs]) => rs.length);
+  const quickButtons = [
+    ...["gov", "sen"]
+      .map((cat) => races.find((r) => r.category === cat))
+      .filter(Boolean)
+      .map((r) => `<button type="button" data-race="${esc(r.id)}" aria-pressed="${!!race && r.id === race.id}">${esc(r.name)}</button>`),
+    houseRaces.length
+      ? `<button type="button" data-race="${HOUSE_LIST}" aria-pressed="${showHouseList || (!!race && race.category === "house")}">U.S. House</button>`
+      : "",
+  ].join("");
   const picker = races.length
-    ? `<div class="picker"><label for="race-select">Race</label><select id="race-select">${groups
+    ? `<div class="picker"><label for="race-select">Race</label><select id="race-select">${showHouseList ? `<option value="" selected>U.S. House: all districts</option>` : ""}${groups
         .map(
           ([cat, rs]) =>
             `<optgroup label="${esc(CATEGORY_LABEL[cat])}">${rs
@@ -720,23 +733,20 @@ async function renderState(key) {
               .join("")}</optgroup>`,
         )
         .join("")}</select>
-        <div class="quick">${["gov", "sen"]
-          .map((cat) => races.find((r) => r.category === cat))
-          .filter(Boolean)
-          .map((r) => `<button type="button" data-race="${esc(r.id)}" aria-pressed="${race && r.id === race.id}">${esc(r.name)}</button>`)
-          .join("")}</div></div>`
+        <div class="quick">${quickButtons}</div></div>`
     : "";
 
   $main.innerHTML = `<section class="state-section"><div class="state-head"><h2>${st.name}</h2></div>
     ${statusNotice(d)}
     ${picker}
+    ${showHouseList ? houseTable(key, houseRaces) + `<p class="prose-muted">Tap a district for its county map and full results.</p>` : ""}
     ${race ? raceBlock(race, { big: true }) : ""}
     <div id="map-area">${race ? `<div class="map-wrap"><div class="map-loading">Loading county results…</div></div>` : ""}</div>
     <div id="county-area"></div>
   </section>`;
 
   const sel = document.getElementById("race-select");
-  if (sel) sel.addEventListener("change", () => selectRace(key, sel.value));
+  if (sel) sel.addEventListener("change", () => sel.value && selectRace(key, sel.value));
   $main.querySelectorAll(".quick button").forEach((b) => b.addEventListener("click", () => selectRace(key, b.dataset.race)));
 
   if (!race) return;
