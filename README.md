@@ -36,6 +36,18 @@ Every push to the repo redeploys automatically.
 
 **Or from a terminal:** `npm install && npx wrangler login && npx wrangler deploy`
 
+## Senate control and House control
+
+These tabs show the pre-election split, how many seats are on the ballot, the seats called so far and what
+each outcome would mean. There's no free national feed, so the calls are entered by hand at **`/admin.html`**
+as the networks project winners. Everyone's page picks up a save within a minute.
+
+One-time setup: Worker → **Settings → Variables and Secrets → Add** → type **Secret**, name `ADMIN_PASSCODE`,
+value of your choice. Then use that passcode on `/admin.html`.
+
+The starting numbers (Senate 53 R / 47 D with 35 seats up; House 218 R / 214 D / 1 independent / 2 vacant)
+live in `public/js/control.js`.
+
 ## Check it before polls close
 
 | URL | What it shows |

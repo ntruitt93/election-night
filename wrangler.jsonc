@@ -7,5 +7,10 @@
     "directory": "./public",
     "binding": "ASSETS"
   },
+  // Shared Senate/House seat tally (one tiny Durable Object; works on the free plan).
+  "durable_objects": {
+    "bindings": [{ "name": "TALLY", "class_name": "Tally" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tally"] }],
   "observability": { "enabled": true }
 }

@@ -15,9 +15,19 @@ const SLUG = /^[A-Za-z0-9_-]{1,80}$/;
 const ITEM_ID = /^[A-Za-z0-9-]{1,64}$/;
 const DATE = /^\d{8}$/;
 
+import { handleControl } from "./control.js";
+export { Tally } from "./control.js";
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/control") {
+      try {
+        return await handleControl(request, env);
+      } catch (err) {
+        return json({ error: String(err && err.message ? err.message : err) }, 500);
+      }
+    }
     if (url.pathname.startsWith("/api/")) {
       if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "method not allowed" }, 405);
       try {

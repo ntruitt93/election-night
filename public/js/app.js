@@ -7,6 +7,7 @@ import {
   CATEGORY_ORDER,
   CATEGORY_LABEL,
 } from "./parse.js";
+import { BASELINE, senateState, houseState, headline, detail, scenarios, seatBar } from "./control.js";
 
 // ------------------------------------------------------------------ settings
 
@@ -35,6 +36,8 @@ const PARTY = {
 
 const app = {
   data: { ga: null, fl: null }, // { races, status: {ok, message}, fetchedAt, sourceTime }
+  control: null, // shared seat calls from /api/control
+  controlError: null,
   geo: {},
   gaSlug: GA_SLUG,
   gaDetail: new Map(), // `${sourceId}` -> { fetchedCycle, detail }
@@ -120,6 +123,29 @@ async function loadGeo(key) {
   return app.geo[key];
 }
 
+async function loadControl() {
+  if (DEMO) {
+    const step = Math.floor(Date.now() / 60000) % 40;
+    const sR = Math.min(22, Math.round(step * 0.55)), sD = Math.min(13, Math.round(step * 0.33));
+    const hR = Math.min(230, step * 6), hD = Math.min(220, step * 6 - 3 > 0 ? step * 6 - 3 : 0);
+    app.control = {
+      senate: { calledR: sR, calledD: sD, flipsToR: step > 20 ? 1 : 0, flipsToD: step > 10 ? 2 : 0 },
+      house: { calledR: hR, calledD: hD, flipsToR: Math.floor(step / 8), flipsToD: Math.floor(step / 5) },
+      updatedAt: new Date().toISOString(),
+    };
+    return;
+  }
+  try {
+    const res = await fetch("/api/control", { cache: "no-store" });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    app.control = body;
+    app.controlError = null;
+  } catch (err) {
+    app.controlError = String(err.message || err);
+  }
+}
+
 async function loadAll() {
   if (app.loading) return;
   app.loading = true;
@@ -127,6 +153,7 @@ async function loadAll() {
   $refresh.textContent = "Refreshing…";
   app.cycle++;
   try {
+    const controlLoad = loadControl();
     if (DEMO) {
       const { demoData } = await import("./demo.js");
       const [gaGeo, flGeo] = await Promise.all([loadGeo("ga"), loadGeo("fl")]);
@@ -141,6 +168,7 @@ async function loadAll() {
       app.data.ga = mergeStatus(app.data.ga, ga, "Georgia");
       app.data.fl = mergeStatus(app.data.fl, fl, "Florida");
     }
+    await controlLoad;
     app.lastLoad = Date.now();
   } finally {
     app.loading = false;
@@ -300,8 +328,90 @@ function statusNotice(d) {
 
 // ------------------------------------------------------------------ views
 
+// ------------------------------------------------------------------ Congress control
+
+function controlStatus() {
+  if (app.controlError && !app.control) return `<div class="notice error">Couldn't load the seat counts (${esc(app.controlError)}).</div>`;
+  return "";
+}
+
+function calledNote() {
+  const t = app.control && app.control.updatedAt ? new Date(app.control.updatedAt) : null;
+  const when = t && !isNaN(t) ? ` Last updated ${t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.` : "";
+  return `Seat calls are entered by hand as the major networks project winners.${when}`;
+}
+
+function controlMini(chamber) {
+  const s = chamber === "senate" ? senateState(app.control) : houseState(app.control);
+  const name = chamber === "senate" ? "Senate control" : "House control";
+  return `<a class="ctl-mini" href="#${chamber}">
+    <span class="ctl-mini-head"><b>${name}</b><span>${esc(headline(chamber, s))}</span></span>
+    ${seatBar(chamber, s)}
+  </a>`;
+}
+
+function renderControl(chamber) {
+  const s = chamber === "senate" ? senateState(app.control) : houseState(app.control);
+  const other = chamber === "senate" ? houseState(app.control) : senateState(app.control);
+  const sen = chamber === "senate" ? s : other;
+  const hou = chamber === "house" ? s : other;
+  const b = BASELINE[chamber];
+  const name = chamber === "senate" ? "Senate control" : "House control";
+  const winnerColor = s.winner === "R" ? "var(--rep)" : s.winner === "D" ? "var(--dem)" : "var(--ink)";
+
+  const before =
+    chamber === "senate"
+      ? `<p>Before tonight: <b>53 Republicans, 47 Democrats</b> (45 Democrats plus 2 independents who vote with them). <b>35 seats are on the ballot</b>: 22 held by Republicans, 13 by Democrats, including special elections in Ohio and Florida. The other 65 aren't up this year, so the count starts at 31 Republicans and 34 Democrats.</p>
+         <p>Control takes 51 seats, or 50 for Republicans because the Vice President breaks ties.</p>`
+      : `<p>Before tonight: <b>218 Republicans, 214 Democrats</b>, 1 independent and 2 vacant seats. <b>All 435 seats are on the ballot</b>, so the count starts at zero for both parties.</p>
+         <p>The majority takes <b>218 seats</b>.</p>`;
+
+  const stateRaces = [];
+  if (chamber === "senate") {
+    for (const key of ["ga", "fl"]) {
+      const d = app.data[key];
+      const r = d && d.races && d.races.find((x) => x.category === "sen");
+      if (r) stateRaces.push(raceBlock({ ...r, name: `${STATES[key].name}: U.S. Senate` }, { link: `#${key}:${encodeURIComponent(r.id)}` }));
+    }
+  } else {
+    for (const key of ["ga", "fl"]) {
+      const d = app.data[key];
+      const rs = d && d.races ? d.races.filter((x) => x.category === "house") : [];
+      if (rs.length) stateRaces.push(`<h4 class="sub-state">${STATES[key].name}</h4>` + houseTable(key, rs).replace("<h3>U.S. House</h3>", ""));
+    }
+  }
+
+  const sc = scenarios(sen, hou);
+  const scenarioList = sc
+    .map(
+      (x) => `<li class="scn${x.settled ? " settled" : ""}${x.possible ? "" : " ruled-out"}">
+        <b>${esc(x.title)}</b>${x.settled ? ` <span class="scn-tag">Tonight's result</span>` : x.possible ? "" : ` <span class="scn-tag out">Ruled out</span>`}
+        <p>${esc(x.text)}</p></li>`,
+    )
+    .join("");
+
+  $main.innerHTML = `<section class="state-section">
+    <div class="state-head"><h2>${name}</h2></div>
+    ${controlStatus()}
+    <section class="ctl">
+      <p class="ctl-headline" style="color:${winnerColor}">${esc(headline(chamber, s))}</p>
+      ${seatBar(chamber, s)}
+      <div class="ctl-legend">${chamber === "senate" ? "Line marks 50 seats: enough for Republicans, one short for Democrats." : "Line marks the 218-seat majority."}</div>
+      ${detail(chamber, s).map((l) => `<p class="ctl-detail">${esc(l)}</p>`).join("")}
+      <p class="ctl-note">${esc(calledNote())}</p>
+    </section>
+    <h3 class="section-title">Where things started</h3>
+    <div class="prose">${before}</div>
+    <h3 class="section-title">What tonight could mean</h3>
+    <p class="prose-muted">The President is a Republican, so control of each chamber decides how much of his agenda can pass and how much oversight he faces.</p>
+    <ul class="scenarios">${scenarioList}</ul>
+    ${stateRaces.length ? `<h3 class="section-title">${chamber === "senate" ? "Senate races on this page" : "House races on this page"}</h3>${stateRaces.join("")}` : ""}
+  </section>`;
+}
+
 function renderOverview() {
   const out = [];
+  out.push(`<section class="state-section ctl-strip"><div class="state-head"><h2>Congress</h2></div>${controlStatus()}${controlMini("senate")}${controlMini("house")}</section>`);
   for (const key of ["ga", "fl"]) {
     const d = app.data[key];
     const st = STATES[key];
@@ -551,7 +661,7 @@ function lastName(name) {
 function readHash() {
   const h = decodeURIComponent(location.hash.replace(/^#/, ""));
   const [view, raceId] = h.split(/:(.*)/s);
-  app.view = view === "ga" || view === "fl" ? view : "overview";
+  app.view = ["ga", "fl", "senate", "house"].includes(view) ? view : "overview";
   if (raceId && (view === "ga" || view === "fl")) {
     if (app.selected[view] !== raceId) {
       app.county[view] = null;
@@ -567,6 +677,7 @@ function render() {
     else a.removeAttribute("aria-current");
   });
   if (app.view === "overview") renderOverview();
+  else if (app.view === "senate" || app.view === "house") renderControl(app.view);
   else renderState(app.view);
   renderChrome();
 }
