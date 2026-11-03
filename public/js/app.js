@@ -17,6 +17,8 @@ const DEMO = params.has("demo");
 const FL_DATE = /^\d{8}$/.test(params.get("fldate") || "") ? params.get("fldate") : null; // test with a past file
 const GA_SLUG = /^[A-Za-z0-9_-]{1,80}$/.test(params.get("gaslug") || "") ? params.get("gaslug") : null;
 const GA_DATE = params.get("gadate") || "2026-11-03";
+// Senate/House control tabs are parked for now; add ?congress=1 to the URL to see them.
+const CONGRESS = params.has("congress");
 
 const STATES = {
   ga: { code: "GA", name: "Georgia" },
@@ -153,7 +155,7 @@ async function loadAll() {
   $refresh.textContent = "Refreshing…";
   app.cycle++;
   try {
-    const controlLoad = loadControl();
+    const controlLoad = CONGRESS ? loadControl() : Promise.resolve();
     if (DEMO) {
       const { demoData } = await import("./demo.js");
       const [gaGeo, flGeo] = await Promise.all([loadGeo("ga"), loadGeo("fl")]);
@@ -411,7 +413,9 @@ function renderControl(chamber) {
 
 function renderOverview() {
   const out = [];
-  out.push(`<section class="state-section ctl-strip"><div class="state-head"><h2>Congress</h2></div>${controlStatus()}${controlMini("senate")}${controlMini("house")}</section>`);
+  if (CONGRESS) {
+    out.push(`<section class="state-section ctl-strip"><div class="state-head"><h2>Congress</h2></div>${controlStatus()}${controlMini("senate")}${controlMini("house")}</section>`);
+  }
   for (const key of ["ga", "fl"]) {
     const d = app.data[key];
     const st = STATES[key];
@@ -661,7 +665,7 @@ function lastName(name) {
 function readHash() {
   const h = decodeURIComponent(location.hash.replace(/^#/, ""));
   const [view, raceId] = h.split(/:(.*)/s);
-  app.view = ["ga", "fl", "senate", "house"].includes(view) ? view : "overview";
+  app.view = ["ga", "fl", ...(CONGRESS ? ["senate", "house"] : [])].includes(view) ? view : "overview";
   if (raceId && (view === "ga" || view === "fl")) {
     if (app.selected[view] !== raceId) {
       app.county[view] = null;
@@ -723,6 +727,7 @@ window.addEventListener("hashchange", () => {
 $refresh.addEventListener("click", () => loadAll());
 
 if (DEMO) document.getElementById("demo-banner").hidden = false;
+if (CONGRESS) document.querySelectorAll(".congress-tab").forEach((a) => (a.hidden = false));
 readHash();
 render();
 loadAll();
