@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Election Night: Georgia and Florida</title>
+  <meta name="description" content="Live, unofficial county-level results for Georgia and Florida, straight from each state's election office.">
+  <meta name="theme-color" content="#f2f4f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141922" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='16' height='32' fill='%232559b8'/%3E%3Crect x='16' width='16' height='32' fill='%23c8312b'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,400;0,500;0,600;0,800;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="demo-banner" class="demo-banner" hidden>Demo mode: these numbers are made up for testing.</div>
+
+  <header class="top">
+    <div class="top-inner">
+      <h1 class="title">Election night <span class="title-states">Georgia &amp; Florida</span></h1>
+      <div class="status-line">
+        <span id="updated" class="updated">Loading results…</span>
+        <button id="refresh" class="refresh" type="button">Refresh</button>
+      </div>
+    </div>
+    <nav class="tabs" aria-label="Views">
+      <a href="#overview" data-view="overview">Overview</a>
+      <a href="#ga" data-view="ga">Georgia</a>
+      <a href="#fl" data-view="fl">Florida</a>
+    </nav>
+  </header>
+
+  <main id="main" class="main" tabindex="-1"></main>
+
+  <footer class="foot">
+    <p>Unofficial results, taken directly from the
+      <a href="https://results.sos.ga.gov/results/public/Georgia" rel="noopener">Georgia Secretary of State</a> and the
+      <a href="https://floridaelectionwatch.gov/" rel="noopener">Florida Division of Elections</a>.
+      Totals change all night as counties report. This page shows who is ahead; it doesn't call races.</p>
+    <p id="feed-status" class="feed-status"></p>
+  </footer>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "election-night",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Live, unofficial Georgia and Florida election results dashboard on Cloudflare Workers.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
