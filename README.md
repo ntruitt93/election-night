@@ -36,7 +36,20 @@ Every push to the repo redeploys automatically.
 
 **Or from a terminal:** `npm install && npx wrangler login && npx wrangler deploy`
 
-## Senate control and House control
+## Your races (ZIP lookup)
+
+Type a ZIP and the page shows every statewide, congressional, legislative (Florida), ballot-measure and judicial
+race whose results include that county, with the county's own numbers under each race.
+
+- ZIP → county comes from `public/geo/zips.json`, built from the Census 2020 ZIP-area-to-tract relationship
+  (via the zipcodeR package's data). ZIPs that cross county lines list the most-covered county first and
+  let the person pick theirs.
+- County → district comes from tonight's live results (which counties report each race), so it follows
+  Florida's new 2026 congressional map automatically. When a county is split between districts, the page
+  shows all of them and points to the state's official voter lookup.
+- Local races aren't covered: they aren't in the states' feeds.
+
+## Senate control and House control (parked; open with `?congress=1`)
 
 These tabs show the pre-election split, how many seats are on the ballot, the seats called so far and what
 each outcome would mean. There's no free national feed, so the calls are entered by hand at **`/admin.html`**

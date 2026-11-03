@@ -275,10 +275,25 @@ function candidateRows(race, { limit = 6, votes = null, total = null } = {}) {
     .join("")}</ul>${hidden > 0 ? `<div class="more-cands">+ ${hidden} more (${hidden === 1 ? "write-in or minor candidate" : "write-ins and minor candidates"})</div>` : ""}`;
 }
 
-function raceBlock(race, { big = false, link = null } = {}) {
+// One line with a race's numbers inside a single county.
+function countyLine(race, ck) {
+  const c = race.counties && race.counties[ck];
+  if (!c) return "";
+  const parts = race.candidates
+    .map((x) => ({ n: lastName(x.name), v: c.votes[x.key] || 0 }))
+    .sort((a, b) => b.v - a.v)
+    .slice(0, 3)
+    .filter((x) => x.v > 0)
+    .map((x) => `<b>${esc(x.n)}</b> ${pctText(x.v, c.total)}`);
+  const rep = c.precinctsTotal ? `${Math.round(pct(c.precinctsReporting, c.precinctsTotal))}% of precincts in` : "";
+  return `<p class="in-county">In ${esc(c.name)} County: ${parts.length ? parts.join(", ") : "no votes yet"}${rep && parts.length ? ` (${rep})` : ""}</p>`;
+}
+
+function raceBlock(race, { big = false, link = null, county = null } = {}) {
   const inner = `<div class="race-head"><h3 class="race-name">${esc(race.name)}</h3><span class="reporting">${esc(reportingText(race))}</span></div>
     ${tugBar(race)}
-    ${candidateRows(race, { limit: big ? 8 : 4 })}`;
+    ${candidateRows(race, { limit: big ? 8 : 4 })}
+    ${county ? countyLine(race, county) : ""}`;
   if (link) return `<a class="race race-link${big ? " big" : ""}" href="${link}">${inner}</a>`;
   return `<section class="race${big ? " big" : ""}">${inner}</section>`;
 }
@@ -329,6 +344,164 @@ function statusNotice(d) {
 }
 
 // ------------------------------------------------------------------ views
+
+// ------------------------------------------------------------------ Your races (ZIP lookup)
+
+const VOTER_LOOKUP = {
+  ga: { label: "Georgia's My Voter Page", url: "https://mvp.sos.ga.gov/s/" },
+  fl: { label: "Florida's voter lookup", url: "https://registration.elections.myflorida.com/CheckVoterStatus" },
+};
+const MY_CATEGORIES = ["gov", "sen", "statewide", "measure", "judicial", "house", "leg"];
+
+function loadZips() {
+  if (!app.zips) app.zips = fetch("/geo/zips.json").then((r) => r.json());
+  return app.zips;
+}
+
+function saveMine() {
+  try {
+    localStorage.setItem("my-zip", JSON.stringify({ zip: app.myZip, county: app.myCounty }));
+  } catch {}
+}
+function restoreMine() {
+  try {
+    const v = JSON.parse(localStorage.getItem("my-zip") || "null");
+    if (v && /^\d{5}$/.test(v.zip)) {
+      app.myZip = v.zip;
+      app.myCounty = v.county || null;
+    }
+  } catch {}
+}
+
+async function mapLimit(items, n, fn) {
+  let i = 0;
+  const worker = async () => {
+    while (i < items.length) {
+      const item = items[i++];
+      try {
+        await fn(item);
+      } catch {}
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+}
+
+function zipCard({ compact = false, heading = true } = {}) {
+  return `<section class="zip-card">
+    ${heading ? "<h3>Your races</h3>" : ""}
+    <p>Enter your ZIP code to see the governor, Senate, House and other races on your ballot, with your county's numbers.</p>
+    <form class="zip-form" id="zip-form">
+      <label class="visually-hidden" for="zip-input">ZIP code</label>
+      <input id="zip-input" inputmode="numeric" autocomplete="postal-code" maxlength="5" pattern="[0-9]{5}" placeholder="ZIP code" value="${esc(app.myZip || "")}">
+      <button type="submit">${compact ? "Show my races" : "Look up"}</button>
+    </form>
+  </section>`;
+}
+
+function bindZipForm() {
+  const form = document.getElementById("zip-form");
+  if (!form) return;
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const zip = document.getElementById("zip-input").value.replace(/\D/g, "").slice(0, 5);
+    app.myZip = zip;
+    app.myCounty = null;
+    saveMine();
+    if (app.view !== "me") location.hash = "#me";
+    else renderMe();
+  });
+}
+
+async function renderMe() {
+  const head = `<section class="state-section"><div class="state-head"><h2>Your races</h2></div>${zipCard({ heading: false })}<div id="my-results"></div></section>`;
+  $main.innerHTML = head;
+  bindZipForm();
+  const $out = document.getElementById("my-results");
+  if (!app.myZip) return;
+  if (!/^\d{5}$/.test(app.myZip)) {
+    $out.innerHTML = `<div class="notice">Enter a 5-digit ZIP code.</div>`;
+    return;
+  }
+
+  const [zips, gaGeo, flGeo] = await Promise.all([loadZips(), loadGeo("ga"), loadGeo("fl")]);
+  const fipsList = zips[app.myZip];
+  if (!fipsList) {
+    $out.innerHTML = `<div class="notice">ZIP ${esc(app.myZip)} isn't in Georgia or Florida, or it's a P.O. box ZIP. Try the ZIP code where you live.</div>`;
+    return;
+  }
+  const geoByFips = new Map([...gaGeo.counties, ...flGeo.counties].map((c) => [c.fips, c]));
+  if (!app.myCounty || !fipsList.includes(app.myCounty)) app.myCounty = fipsList[0];
+  const fips = app.myCounty;
+  const stateKey = fips.startsWith("13") ? "ga" : "fl";
+  const county = geoByFips.get(fips);
+  const ck = countyKey(county.name);
+
+  const pick =
+    fipsList.length > 1
+      ? `<div class="county-pick">ZIP ${esc(app.myZip)} crosses county lines. Showing <b>${esc(county.name)} County</b>; pick yours if that's not it.
+          <div class="chips">${fipsList
+            .map((f) => `<button type="button" data-fips="${f}" aria-pressed="${f === fips}">${esc(geoByFips.get(f).name)}</button>`)
+            .join("")}</div></div>`
+      : `<p class="prose-muted" style="margin-top:12px">ZIP ${esc(app.myZip)} is in <b>${esc(county.name)} County, ${STATES[stateKey].name}</b>.</p>`;
+
+  const d = app.data[stateKey];
+  if (!d || !d.races) {
+    $out.innerHTML = pick + statusNotice(d);
+    bindCountyPick();
+    return;
+  }
+
+  const candidates = d.races.filter((r) => MY_CATEGORIES.includes(r.category));
+  $out.innerHTML = pick + `<div class="notice">Loading your county's results…</div>`;
+  bindCountyPick();
+
+  // Georgia sends county detail one race at a time.
+  if (stateKey === "ga") {
+    const cycleAtStart = app.cycle;
+    await mapLimit(candidates.filter((r) => r.category !== "leg"), 6, ensureGaCounties);
+    if (app.view !== "me" || app.cycle !== cycleAtStart || app.myCounty !== fips) return;
+  }
+
+  const mine = candidates.filter((r) => r.counties && r.counties[ck]);
+  const groups = [
+    ["Statewide", mine.filter((r) => ["gov", "sen", "statewide"].includes(r.category))],
+    ["U.S. House", mine.filter((r) => r.category === "house")],
+    ["Ballot measures", mine.filter((r) => r.category === "measure")],
+    ["State legislature", mine.filter((r) => r.category === "leg")],
+    ["Judges", mine.filter((r) => r.category === "judicial")],
+  ].filter(([, rs]) => rs.length);
+
+  const lookup = VOTER_LOOKUP[stateKey];
+  const splitNote = (rs, what) =>
+    rs.length > 1
+      ? `<p class="split-note">${esc(county.name)} County is split between ${rs.length} ${what}. Your voter registration card or <a href="${lookup.url}" rel="noopener">${lookup.label}</a> shows which one is yours.</p>`
+      : "";
+
+  const body = groups
+    .map(([title, rs]) => {
+      const note = title === "U.S. House" ? splitNote(rs, "congressional districts") : title === "State legislature" ? splitNote(rs.filter((r) => /senat/i.test(r.name)), "state senate districts") + splitNote(rs.filter((r) => !/senat/i.test(r.name)), "state house districts") : "";
+      return `<h3 class="section-title">${esc(title)}</h3>${note}${rs.map((r) => raceBlock(r, { county: ck, link: `#${stateKey}:${encodeURIComponent(r.id)}` })).join("")}`;
+    })
+    .join("");
+
+  const missing =
+    stateKey === "ga"
+      ? `<p class="prose-muted">State legislative and local races aren't included here. Find them in the <a href="#ga">Georgia tab</a>'s race picker.</p>`
+      : `<p class="prose-muted">Local races (county, city and school board) aren't in the state's results file, so they aren't shown here.</p>`;
+
+  $out.innerHTML = pick + (body || `<div class="notice">No races found for ${esc(county.name)} County in the state's results yet.</div>`) + missing;
+  bindCountyPick();
+}
+
+function bindCountyPick() {
+  document.querySelectorAll(".county-pick button[data-fips]").forEach((b) =>
+    b.addEventListener("click", () => {
+      app.myCounty = b.dataset.fips;
+      saveMine();
+      renderMe();
+    }),
+  );
+}
 
 // ------------------------------------------------------------------ Congress control
 
@@ -413,6 +586,11 @@ function renderControl(chamber) {
 
 function renderOverview() {
   const out = [];
+  out.push(
+    app.myZip
+      ? `<section class="zip-card"><h3>Your races</h3><p>See every race on your ballot for ZIP ${esc(app.myZip)}, with your county's numbers.</p><a class="zip-cta" href="#me">Show my races</a></section>`
+      : zipCard({ compact: true }),
+  );
   if (CONGRESS) {
     out.push(`<section class="state-section ctl-strip"><div class="state-head"><h2>Congress</h2></div>${controlStatus()}${controlMini("senate")}${controlMini("house")}</section>`);
   }
@@ -437,6 +615,7 @@ function renderOverview() {
     out.push(`</section>`);
   }
   $main.innerHTML = out.join("");
+  bindZipForm();
 }
 
 function defaultRace(races) {
@@ -665,7 +844,7 @@ function lastName(name) {
 function readHash() {
   const h = decodeURIComponent(location.hash.replace(/^#/, ""));
   const [view, raceId] = h.split(/:(.*)/s);
-  app.view = ["ga", "fl", ...(CONGRESS ? ["senate", "house"] : [])].includes(view) ? view : "overview";
+  app.view = ["me", "ga", "fl", ...(CONGRESS ? ["senate", "house"] : [])].includes(view) ? view : "overview";
   if (raceId && (view === "ga" || view === "fl")) {
     if (app.selected[view] !== raceId) {
       app.county[view] = null;
@@ -681,6 +860,7 @@ function render() {
     else a.removeAttribute("aria-current");
   });
   if (app.view === "overview") renderOverview();
+  else if (app.view === "me") renderMe();
   else if (app.view === "senate" || app.view === "house") renderControl(app.view);
   else renderState(app.view);
   renderChrome();
@@ -728,6 +908,7 @@ $refresh.addEventListener("click", () => loadAll());
 
 if (DEMO) document.getElementById("demo-banner").hidden = false;
 if (CONGRESS) document.querySelectorAll(".congress-tab").forEach((a) => (a.hidden = false));
+restoreMine();
 readHash();
 render();
 loadAll();
