@@ -20,6 +20,14 @@ export class Tally extends DurableObject {
     await this.ctx.storage.put("tally", next);
     return next;
   }
+  // General-purpose storage, used for the forecast snapshot.
+  async getValue(key) {
+    return (await this.ctx.storage.get(key)) ?? null;
+  }
+  async putValue(key, value) {
+    await this.ctx.storage.put(key, value);
+    return value;
+  }
 }
 
 export async function handleControl(request, env) {

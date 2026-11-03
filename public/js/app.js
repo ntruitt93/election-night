@@ -149,6 +149,25 @@ async function loadControl() {
   }
 }
 
+async function loadForecast() {
+  if (DEMO) {
+    app.forecast = {
+      asOf: new Date().toISOString(),
+      frozen: true,
+      states: { GA: { gov: { D: 71, R: 29 }, sen: { D: 53, R: 47 } }, FL: { gov: { D: 12, R: 88 }, sen: { D: 6, R: 94 } } },
+    };
+    return;
+  }
+  // Refresh every few minutes at most; the numbers don't move fast and freeze at poll close.
+  if (app.forecastAt && Date.now() - app.forecastAt < 4 * 60 * 1000) return;
+  try {
+    const res = await fetch("/api/forecast", { cache: "no-store" });
+    if (!res.ok) return;
+    app.forecast = await res.json();
+    app.forecastAt = Date.now();
+  } catch {}
+}
+
 async function loadAll() {
   if (app.loading) return;
   app.loading = true;
@@ -157,6 +176,7 @@ async function loadAll() {
   app.cycle++;
   try {
     const controlLoad = CONGRESS ? loadControl() : Promise.resolve();
+    const forecastLoad = loadForecast();
     if (DEMO) {
       const { demoData } = await import("./demo.js");
       const [gaGeo, flGeo] = await Promise.all([loadGeo("ga"), loadGeo("fl")]);
@@ -172,6 +192,7 @@ async function loadAll() {
       app.data.fl = mergeStatus(app.data.fl, fl, "Florida");
     }
     await controlLoad;
+    await forecastLoad;
     app.lastLoad = Date.now();
   } finally {
     app.loading = false;
@@ -297,10 +318,33 @@ function countyLine(race, ck) {
   return `<p class="in-county">In ${esc(c.name)} County: ${parts.length ? parts.join(", ") : "no votes yet"}${rep && parts.length ? ` (${rep})` : ""}</p>`;
 }
 
+// The pre-election favorite for the governor and Senate races.
+function forecastLine(race) {
+  const f = app.forecast && app.forecast.states && app.forecast.states[race.state];
+  const key = race.category === "gov" ? "gov" : race.category === "sen" ? "sen" : null;
+  const r = f && key ? f[key] : null;
+  if (!r || r.D == null || r.R == null) return "";
+  const fav = r.D >= r.R ? "D" : "R";
+  const chance = Math.max(r.D, r.R);
+  const nameFor = (p) => {
+    const c = race.candidates.find((x) => x.party === p && !/write-?in/i.test(x.name));
+    return c ? lastName(c.name) : (r.names && r.names[p]) || (p === "D" ? "Democrat" : "Republican");
+  };
+  const color = partyColor(fav);
+  let text;
+  if (chance < 58) text = `toss-up (${esc(nameFor("D"))} ${Math.round(r.D)}%, ${esc(nameFor("R"))} ${Math.round(r.R)}%)`;
+  else {
+    const strength = chance >= 90 ? "heavily favored" : chance >= 70 ? "favored" : "slightly favored";
+    text = `<b style="color:${color}">${esc(nameFor(fav))}</b> ${strength} (${Math.round(chance)}% chance)`;
+  }
+  return `<p class="forecast"><i class="swatch" style="background:${chance < 58 ? "var(--oth)" : color}"></i><span>Expected: ${text}</span></p>`;
+}
+
 // link: the whole card opens another view. moreLink: a small link at the bottom
 // instead, so the card itself can expand in place.
 function raceBlock(race, { big = false, link = null, county = null, moreLink = null } = {}) {
   const inner = `<div class="race-head"><h3 class="race-name">${esc(race.name)}</h3><span class="reporting">${esc(reportingText(race))}</span></div>
+    ${forecastLine(race)}
     ${tugBar(race)}
     ${candidateRows(race, { limit: big ? 8 : 4, expandable: !link })}
     ${county ? countyLine(race, county) : ""}
@@ -905,6 +949,11 @@ function renderChrome() {
       const t = new Date(d.sourceTime);
       if (!isNaN(t)) bits.push(`${name} data as of ${t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
     } else if (d.status && !d.status.ok) bits.push(`${name}: feed problem`);
+  }
+  if (app.forecast && app.forecast.asOf) {
+    const t = new Date(app.forecast.asOf);
+    const when = isNaN(t) ? "" : ` as of ${t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    bits.push(`"Expected" is the pre-election forecast from Kalshi${when}${app.forecast.frozen ? ", saved when polls closed" : ""}`);
   }
   if (DEMO) bits.push("demo data");
   if (FL_DATE) bits.push(`Florida test file ${FL_DATE}`);

@@ -16,11 +16,19 @@ const ITEM_ID = /^[A-Za-z0-9-]{1,64}$/;
 const DATE = /^\d{8}$/;
 
 import { handleControl } from "./control.js";
+import { handleForecast } from "./forecast.js";
 export { Tally } from "./control.js";
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/forecast") {
+      try {
+        return await handleForecast(env, ctx);
+      } catch (err) {
+        return json({ error: String(err && err.message ? err.message : err) }, 502);
+      }
+    }
     if (url.pathname === "/api/control") {
       try {
         return await handleControl(request, env);

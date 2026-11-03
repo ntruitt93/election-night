@@ -127,6 +127,9 @@ button { font: inherit; color: inherit; }
 .race-name { margin: 0; font-size: 18px; font-weight: 800; }
 .reporting { font-size: 13px; color: var(--muted); white-space: nowrap; }
 
+.forecast { display: flex; align-items: baseline; gap: 8px; margin: 6px 0 0; font-size: 14px; color: var(--muted); }
+.forecast b { font-weight: 600; }
+.forecast .swatch { border-radius: 50%; width: 8px; height: 8px; }
 .tug { position: relative; height: 14px; margin: 12px 0 10px; background: var(--track); border-radius: 3px; overflow: hidden; display: flex; }
 .tug span { display: block; height: 100%; transition: width 600ms ease; }
 .tug .half { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 2px; background: var(--surface); transform: translateX(-1px); }
