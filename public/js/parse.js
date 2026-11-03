@@ -50,8 +50,17 @@ function slug(s) {
   return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "x";
 }
 
+// With no votes yet (or a tie), list the major-party nominees first, then other
+// parties and independents, then write-ins.
+export function candidateRank(c) {
+  if (/write-?in/i.test(c.name)) return 3;
+  if (c.party === "R" || c.party === "D") return 0;
+  if (c.party === "O") return 2;
+  return 1;
+}
+
 function finishRace(race) {
-  race.candidates.sort((a, b) => b.votes - a.votes || a.name.localeCompare(b.name));
+  race.candidates.sort((a, b) => b.votes - a.votes || candidateRank(a) - candidateRank(b) || a.name.localeCompare(b.name));
   race.total = race.candidates.reduce((s, c) => s + c.votes, 0);
   return race;
 }

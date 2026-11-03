@@ -38,6 +38,7 @@ const PARTY = {
 
 const app = {
   data: { ga: null, fl: null }, // { races, status: {ok, message}, fetchedAt, sourceTime }
+  expanded: new Set(), // race cards showing every candidate
   control: null, // shared seat calls from /api/control
   controlError: null,
   geo: {},
@@ -252,19 +253,26 @@ function tugBar(race) {
   return `<div class="tug" aria-hidden="true">${parts}<i class="half"></i></div>`;
 }
 
-function candidateRows(race, { limit = 6, votes = null, total = null } = {}) {
+function candidateRows(race, { limit = 6, votes = null, total = null, expandable = false } = {}) {
   const t = total ?? race.total;
+  // Array sort is stable, so ties keep the race's own order (major parties first).
   const list = race.candidates
     .map((c) => ({ ...c, v: votes ? votes[c.key] || 0 : c.votes }))
     .sort((a, b) => b.v - a.v);
   const lead = leaderInfo(list.map((c) => ({ ...c, votes: c.v })), t);
-  const shown = list.slice(0, limit);
-  const hidden = list.length - shown.length;
+  const hidden = Math.max(0, list.length - limit);
+  const shown = expandable ? list : list.slice(0, limit);
+  const what = hidden === 1 ? "write-in or minor candidate" : "write-ins and minor candidates";
+  const more = !hidden
+    ? ""
+    : expandable
+      ? `<button type="button" class="more-cands more-toggle" data-expand="${esc(race.id)}" aria-expanded="false"><span class="when-closed">+ ${hidden} more (${what})</span><span class="when-open">Show fewer</span></button>`
+      : `<div class="more-cands">+ ${hidden} more (${what})</div>`;
   return `<ul class="cands">${shown
     .map((c, i) => {
       const minor = i >= 2 || (t > 0 && pct(c.v, t) < 5);
       const isLead = lead && !lead.tie && lead.leader.key === c.key && t > 0;
-      return `<li class="cand${minor ? " minor" : ""}">
+      return `<li class="cand${minor ? " minor" : ""}${i >= limit ? " extra" : ""}">
         <span class="cand-name"><i class="swatch" style="background:${partyColor(c.party)}"></i><span class="nm"><b>${esc(c.name)}</b>
           ${PARTY[c.party] && PARTY[c.party].label ? `<span class="party">${PARTY[c.party].label}</span>` : ""}
           ${isLead ? `<span class="lead-tag" style="background:${partyColor(c.party)}">Ahead</span>` : ""}</span></span>
@@ -272,7 +280,7 @@ function candidateRows(race, { limit = 6, votes = null, total = null } = {}) {
         <span class="pct">${pctText(c.v, t)}</span>
       </li>`;
     })
-    .join("")}</ul>${hidden > 0 ? `<div class="more-cands">+ ${hidden} more (${hidden === 1 ? "write-in or minor candidate" : "write-ins and minor candidates"})</div>` : ""}`;
+    .join("")}</ul>${more}`;
 }
 
 // One line with a race's numbers inside a single county.
@@ -289,14 +297,31 @@ function countyLine(race, ck) {
   return `<p class="in-county">In ${esc(c.name)} County: ${parts.length ? parts.join(", ") : "no votes yet"}${rep && parts.length ? ` (${rep})` : ""}</p>`;
 }
 
-function raceBlock(race, { big = false, link = null, county = null } = {}) {
+// link: the whole card opens another view. moreLink: a small link at the bottom
+// instead, so the card itself can expand in place.
+function raceBlock(race, { big = false, link = null, county = null, moreLink = null } = {}) {
   const inner = `<div class="race-head"><h3 class="race-name">${esc(race.name)}</h3><span class="reporting">${esc(reportingText(race))}</span></div>
     ${tugBar(race)}
-    ${candidateRows(race, { limit: big ? 8 : 4 })}
-    ${county ? countyLine(race, county) : ""}`;
+    ${candidateRows(race, { limit: big ? 8 : 4, expandable: !link })}
+    ${county ? countyLine(race, county) : ""}
+    ${moreLink ? `<a class="race-more" href="${moreLink}">County map and details</a>` : ""}`;
   if (link) return `<a class="race race-link${big ? " big" : ""}" href="${link}">${inner}</a>`;
-  return `<section class="race${big ? " big" : ""}">${inner}</section>`;
+  const open = app.expanded.has(race.id) ? " open" : "";
+  return `<section class="race${big ? " big" : ""}${open}" data-race-id="${esc(race.id)}">${inner}</section>`;
 }
+
+// Expand/collapse a race card's full candidate list, in place.
+$main.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-expand]");
+  if (!b) return;
+  const card = b.closest(".race");
+  const id = b.dataset.expand;
+  const open = !app.expanded.has(id);
+  if (open) app.expanded.add(id);
+  else app.expanded.delete(id);
+  if (card) card.classList.toggle("open", open);
+  b.setAttribute("aria-expanded", String(open));
+});
 
 function houseTable(stateKey, races) {
   if (!races.length) return "";
@@ -480,7 +505,7 @@ async function renderMe() {
   const body = groups
     .map(([title, rs]) => {
       const note = title === "U.S. House" ? splitNote(rs, "congressional districts") : title === "State legislature" ? splitNote(rs.filter((r) => /senat/i.test(r.name)), "state senate districts") + splitNote(rs.filter((r) => !/senat/i.test(r.name)), "state house districts") : "";
-      return `<h3 class="section-title">${esc(title)}</h3>${note}${rs.map((r) => raceBlock(r, { county: ck, link: `#${stateKey}:${encodeURIComponent(r.id)}` })).join("")}`;
+      return `<h3 class="section-title">${esc(title)}</h3>${note}${rs.map((r) => raceBlock(r, { county: ck, moreLink: `#${stateKey}:${encodeURIComponent(r.id)}` })).join("")}`;
     })
     .join("");
 
