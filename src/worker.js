@@ -88,12 +88,12 @@ async function handleApi(url, ctx) {
   // /api/tx/County.json, /api/tx/Home.json -> Texas data files for tonight (version found automatically)
   // /api/tx/page -> the Secretary of State's plain results page (backup, statewide totals)
   if (parts[0] === "tx" && parts.length === 2) {
-    if (parts[1] === "page") return proxy("https://electionresults.sos.state.tx.us/results.html", "text", ctx);
+    if (parts[1] === "page") return proxy("https://electionresults.sos.state.tx.us/results.html", "html", ctx);
     if (["County.json", "Home.json", "OfficeSummary.json"].includes(parts[1])) {
-      const ver = await txVersion();
-      if (!ver) return json({ error: "Texas hasn't published tonight's data files yet" }, 503);
+      const found = await txVersion();
+      if (!found) return json({ error: "Texas hasn't published tonight's data files yet" }, 503);
       const S = "https://results.texas-election.com/static/data";
-      return proxy(`${S}/election/${TX_ELECTION_ID}/${ver}/${parts[1]}`, "json", ctx, `tx-${parts[1]}`);
+      return proxy(`${S}/election/${found.id}/${found.v}/${parts[1]}`, "json", ctx, `tx-${parts[1]}`);
     }
   }
 
@@ -101,12 +101,18 @@ async function handleApi(url, ctx) {
     const S = "https://results.texas-election.com/static/data";
     const out = {};
     out.siteVersion = await txCheck(`${S}/version.json`);
-    out.electionVersion = await txCheck(`${S}/election/${TX_ELECTION_ID}/version.json`);
-    const ver = out.electionVersion.json && out.electionVersion.json.___versionNo;
-    if (ver) {
-      out.home = await txCheck(`${S}/election/${TX_ELECTION_ID}/${ver}/Home.json`);
-      out.officeSummary = await txCheck(`${S}/election/${TX_ELECTION_ID}/${ver}/OfficeSummary.json`, true);
-      out.county = await txCheck(`${S}/election/${TX_ELECTION_ID}/${ver}/County.json`, true);
+    const sv = out.siteVersion.json && out.siteVersion.json.___versionNo;
+    if (sv) {
+      const list = await txCheck(`${S}/ElectionConstants_${sv}.json`);
+      const y = list.json && list.json.electionInfo ? list.json.electionInfo : {};
+      out.electionList = { verdict: list.verdict, yearsListed: Object.keys(y), elections2026: y["2026"] || null };
+    }
+    const id = await txElectionId();
+    out.electionIdUsed = id || "none found for 2026";
+    if (id) {
+      out.electionVersion = await txCheck(`${S}/election/${id}/version.json`);
+      const ver = out.electionVersion.json && out.electionVersion.json.___versionNo;
+      if (ver) out.county = await txCheck(`${S}/election/${id}/${ver}/County.json`, true);
     }
     out.htmlResultsPage = await txCheck("https://electionresults.sos.state.tx.us/results.html", true);
     return json(out);
@@ -131,21 +137,50 @@ async function handleApi(url, ctx) {
 const TX_ELECTION_ID = "53815"; // Texas SOS id for the Nov 3, 2026 general election
 
 // Texas bumps a data version number with every update; read it, briefly cached.
-let txVersionCache = { at: 0, v: null };
-async function txVersion() {
-  if (Date.now() - txVersionCache.at < 20000 && txVersionCache.v) return txVersionCache.v;
+// The election id comes from the site's own election list (ElectionConstants), so it
+// isn't guessed. Returns { id, v } or null if tonight's election isn't listed yet.
+let txVersionCache = { at: 0, found: null, idAt: 0, id: null };
+async function txGet(url) {
+  const res = await fetch(url, {
+    headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+    signal: AbortSignal.timeout(8000),
+    cf: { cacheTtl: 0 },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+export async function txElectionId() {
+  if (txVersionCache.id && Date.now() - txVersionCache.idAt < 5 * 60 * 1000) return txVersionCache.id;
+  const S = "https://results.texas-election.com/static/data";
   try {
-    const res = await fetch(`https://results.texas-election.com/static/data/election/${TX_ELECTION_ID}/version.json`, {
-      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-      signal: AbortSignal.timeout(8000),
-      cf: { cacheTtl: 0 },
-    });
-    if (res.ok) {
-      const j = await res.json();
-      if (j && j.___versionNo != null) txVersionCache = { at: Date.now(), v: String(j.___versionNo) };
+    const site = await txGet(`${S}/version.json`);
+    const constants = await txGet(`${S}/ElectionConstants_${site.___versionNo}.json`);
+    const year = (constants.electionInfo || {})["2026"] || {};
+    let id = null;
+    for (const [type, entries] of Object.entries(year)) {
+      for (const [eid, info] of Object.entries(entries || {})) {
+        const name = String((info && info.N) || "").toUpperCase();
+        if ((type === "G" || /GENERAL/.test(name)) && /NOV/.test(name)) id = eid;
+        else if (!id && type === "G") id = eid;
+      }
     }
+    if (!id && (await txGet(`${S}/election/${TX_ELECTION_ID}/version.json`).catch(() => null))) id = TX_ELECTION_ID;
+    txVersionCache.id = id;
+    txVersionCache.idAt = Date.now();
+    return id;
+  } catch {
+    return txVersionCache.id;
+  }
+}
+async function txVersion() {
+  if (Date.now() - txVersionCache.at < 20000 && txVersionCache.found) return txVersionCache.found;
+  const id = await txElectionId();
+  if (!id) return null;
+  try {
+    const j = await txGet(`https://results.texas-election.com/static/data/election/${id}/version.json`);
+    if (j && j.___versionNo != null) txVersionCache = { ...txVersionCache, at: Date.now(), found: { id, v: String(j.___versionNo) } };
   } catch {}
-  return txVersionCache.v;
+  return txVersionCache.found;
 }
 
 // One request to a Texas results URL: did it answer with data, or a bot check?
@@ -249,6 +284,13 @@ function validate(status, contentType, body, kind) {
   if (status !== 200) throw new Error(`HTTP ${status}`);
   // A bot-check or error page comes back as HTML; don't cache it as data.
   const head = new TextDecoder().decode(body.slice(0, 200)).trimStart();
+  if (kind === "html") {
+    // Texas's results page is a real web page; just make sure it's that page, not a bot check.
+    const text = new TextDecoder().decode(body.slice(0, 20000));
+    if (/just a moment|cf-chl|challenge-platform|attention required/i.test(text)) throw new Error("got a bot check page");
+    if (!/class="election"|Election Results/i.test(text)) throw new Error("not the results page");
+    return;
+  }
   if (/text\/html/i.test(contentType) || head.startsWith("<")) throw new Error("got an HTML page instead of data");
   // Cheap shape check (parsing a multi-megabyte file here would cost CPU time on every update).
   if (kind === "json" && !/^[{[]/.test(head)) throw new Error("not JSON");
