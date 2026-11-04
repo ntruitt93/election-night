@@ -56,7 +56,12 @@ async function handleApi(url, ctx) {
   if (parts[0] === "fl" && parts.length === 1) {
     const date = url.searchParams.get("date") || ELECTION_DATE;
     if (!DATE.test(date)) return json({ error: "bad date" }, 400);
-    return proxy(`${FL_FILES}/${date}_ElecResultsFL.txt`, "text", ctx);
+    const file = `${FL_FILES}/${date}_ElecResultsFL.txt`;
+    // Florida's download links carry a version number (?v=...) on election night;
+    // asking without it can return an older cached copy of the file.
+    const v = date === ELECTION_DATE ? await flVersion() : null;
+    const upstream = `${file}?v=${encodeURIComponent(v || String(Math.floor(Date.now() / 30000)))}`;
+    return proxy(upstream, "text", ctx, file);
   }
 
   if (parts[0] === "ga") {
@@ -81,7 +86,10 @@ async function handleApi(url, ctx) {
   if (parts[0] === "health") {
     const [ga, fl] = await Promise.all([
       probe(`${GA_API}/jurisdictions/Georgia`, "json"),
-      probe(`${FL_FILES}/${ELECTION_DATE}_ElecResultsFL.txt`, "text"),
+      flVersion().then(async (v) => {
+        const p = await probe(`${FL_FILES}/${ELECTION_DATE}_ElecResultsFL.txt?v=${encodeURIComponent(v || Date.now())}`, "text");
+        return { ...p, version: v || "not found on Downloads page" };
+      }),
     ]);
     return json({ checkedAt: new Date().toISOString(), georgia: ga, florida: fl });
   }
@@ -91,10 +99,27 @@ async function handleApi(url, ctx) {
 
 // Fetch an upstream URL through the edge cache. Serves a fresh cached copy when
 // one exists, otherwise fetches; if the fetch fails, serves the last good copy.
-async function proxy(upstream, kind, ctx) {
+// The version number Florida's own Downloads page links to right now.
+let flVersionCache = { at: 0, v: null };
+async function flVersion() {
+  if (Date.now() - flVersionCache.at < 20000 && flVersionCache.v) return flVersionCache.v;
+  try {
+    const res = await fetch("https://floridaelectionwatch.gov/Downloads", {
+      headers: { "User-Agent": USER_AGENT, Accept: "text/html" },
+      signal: AbortSignal.timeout(8000),
+      cf: { cacheTtl: 0 },
+    });
+    const html = await res.text();
+    const m = html.match(/ElecResultsFL\.txt\?v=([A-Za-z0-9]+)/);
+    if (m) flVersionCache = { at: Date.now(), v: m[1] };
+  } catch {}
+  return flVersionCache.v;
+}
+
+async function proxy(upstream, kind, ctx, cacheName = upstream) {
   const cache = caches.default;
-  const freshKey = new Request(`https://cache.internal/fresh/${encodeURIComponent(upstream)}`);
-  const backupKey = new Request(`https://cache.internal/backup/${encodeURIComponent(upstream)}`);
+  const freshKey = new Request(`https://cache.internal/fresh/${encodeURIComponent(cacheName)}`);
+  const backupKey = new Request(`https://cache.internal/backup/${encodeURIComponent(cacheName)}`);
 
   const hit = await cache.match(freshKey);
   if (hit) return withHeaders(hit, { "X-Cache": "HIT" });
@@ -155,7 +180,14 @@ async function probe(upstream, kind) {
     const contentType = res.headers.get("content-type") || "";
     const body = await res.arrayBuffer();
     validate(res.status, contentType, body, kind);
-    return { ok: true, status: res.status, bytes: body.byteLength, ms: Date.now() - started };
+    const out = { ok: true, status: res.status, bytes: body.byteLength, ms: Date.now() - started };
+    if (kind === "text") {
+      // How many candidate rows have votes yet (last tab-separated column).
+      const lines = new TextDecoder().decode(body).split(/\r?\n/).slice(1);
+      out.rowsWithVotes = lines.filter((l) => Number(l.split("\t").pop()) > 0).length;
+      out.rows = lines.filter((l) => l.trim()).length;
+    }
+    return out;
   } catch (err) {
     return { ok: false, error: short(err), ms: Date.now() - started };
   }
