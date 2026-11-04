@@ -86,34 +86,18 @@ async function handleApi(url, ctx) {
   // /api/check-texas -> one request to Texas's official results site, to see
   // whether it answers automated requests or shows a bot check.
   if (parts[0] === "check-texas") {
-    const target = "https://results.texas-election.com/";
-    const started = Date.now();
-    try {
-      const res = await fetch(target, {
-        headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/json" },
-        signal: AbortSignal.timeout(15000),
-        cf: { cacheTtl: 0 },
-        redirect: "follow",
-      });
-      const text = await res.text();
-      const challenged =
-        res.headers.get("cf-mitigated") === "challenge" || /just a moment|cf-chl|challenge-platform|attention required/i.test(text);
-      const title = (text.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || null;
-      return json({
-        checked: target,
-        verdict: challenged ? "blocked by a bot check" : res.ok ? "reachable" : `answered with HTTP ${res.status}`,
-        status: res.status,
-        botCheck: challenged,
-        finalUrl: res.url,
-        contentType: res.headers.get("content-type"),
-        server: res.headers.get("server"),
-        pageTitle: title && title.trim().slice(0, 120),
-        bytes: text.length,
-        ms: Date.now() - started,
-      });
-    } catch (err) {
-      return json({ checked: target, verdict: "no answer", error: short(err), ms: Date.now() - started });
+    const S = "https://results.texas-election.com/static/data";
+    const out = {};
+    out.siteVersion = await txCheck(`${S}/version.json`);
+    out.electionVersion = await txCheck(`${S}/election/${TX_ELECTION_ID}/version.json`);
+    const ver = out.electionVersion.json && out.electionVersion.json.___versionNo;
+    if (ver) {
+      out.home = await txCheck(`${S}/election/${TX_ELECTION_ID}/${ver}/Home.json`);
+      out.officeSummary = await txCheck(`${S}/election/${TX_ELECTION_ID}/${ver}/OfficeSummary.json`, true);
+      out.county = await txCheck(`${S}/election/${TX_ELECTION_ID}/${ver}/County.json`, true);
     }
+    out.htmlResultsPage = await txCheck("https://electionresults.sos.state.tx.us/results.html", true);
+    return json(out);
   }
 
   if (parts[0] === "health") {
@@ -132,6 +116,39 @@ async function handleApi(url, ctx) {
 
 // Fetch an upstream URL through the edge cache. Serves a fresh cached copy when
 // one exists, otherwise fetches; if the fetch fails, serves the last good copy.
+const TX_ELECTION_ID = "53815"; // Texas SOS id for the Nov 3, 2026 general election
+
+// One request to a Texas results URL: did it answer with data, or a bot check?
+async function txCheck(target, sizeOnly = false) {
+  const started = Date.now();
+  try {
+    const res = await fetch(target, {
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json,text/html,*/*" },
+      signal: AbortSignal.timeout(20000),
+      cf: { cacheTtl: 0 },
+    });
+    const text = await res.text();
+    const botCheck = res.headers.get("cf-mitigated") === "challenge" || /just a moment|cf-chl|challenge-platform|attention required/i.test(text.slice(0, 5000));
+    const r = {
+      verdict: botCheck ? "blocked by a bot check" : res.ok ? "reachable" : `HTTP ${res.status}`,
+      status: res.status,
+      contentType: res.headers.get("content-type"),
+      bytes: text.length,
+      ms: Date.now() - started,
+    };
+    if (!sizeOnly && res.ok && !botCheck) {
+      try {
+        r.json = JSON.parse(text);
+      } catch {
+        r.start = text.slice(0, 200);
+      }
+    } else if (!res.ok || botCheck) r.start = text.slice(0, 200);
+    return r;
+  } catch (err) {
+    return { verdict: "no answer", error: short(err), ms: Date.now() - started };
+  }
+}
+
 // The version number Florida's own Downloads page links to right now.
 let flVersionCache = { at: 0, v: null };
 async function flVersion() {
