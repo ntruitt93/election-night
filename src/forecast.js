@@ -8,6 +8,7 @@ const KALSHI_HOSTS = ["https://external-api.kalshi.com", "https://api.elections.
 const EVENTS = {
   GA: { gov: "GOVPARTYGA-26", sen: "SENATEGA-26" },
   FL: { gov: "GOVPARTYFL-26", sen: "SENATEFLS-26" }, // Florida's Senate race is a special election
+  TX: { gov: "GOVPARTYTX-26", sen: "SENATETX-26" },
 };
 // 7:00 PM Eastern, when Georgia's and most of Florida's polls close.
 const FREEZE_AT = Date.parse("2026-11-04T00:00:00Z");

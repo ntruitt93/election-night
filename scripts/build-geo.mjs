@@ -11,7 +11,7 @@ const d3 = require("d3-geo");
 const atlas = JSON.parse(readFileSync(path.resolve(modules, "us-atlas/counties-10m.json"), "utf8"));
 
 const all = topojson.feature(atlas, atlas.objects.counties).features;
-const STATES = { ga: "13", fl: "12" };
+const STATES = { ga: "13", fl: "12", tx: "48" };
 const WIDTH = 600;
 
 mkdirSync("public/geo", { recursive: true });

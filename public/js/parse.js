@@ -404,3 +404,137 @@ function titleCase(s) {
 }
 
 export { text as gaText };
+
+// ---------------------------------------------------------------- Texas
+
+// Texas names races and candidates in capitals ("U. S. SENATOR", "KEN PAXTON (I)").
+function txName(s) {
+  const t = String(s || "").replace(/\s+/g, " ").replace(/\s*\(I\)\s*$/i, "").trim();
+  return t
+    .toLowerCase()
+    .replace(/(^|[\s\-/'"(])([a-z])/g, (m, a, b) => a + b.toUpperCase())
+    .replace(/\bMc([a-z])/g, (m, a) => "Mc" + a.toUpperCase())
+    .replace(/\b(Ii|Iii|Iv)\b/g, (m) => m.toUpperCase())
+    .replace(/\b([A-Z])\.\s*/g, "$1. ")
+    .trim();
+}
+
+export function classifyTx(raw) {
+  const n = String(raw || "").replace(/\s+/g, " ").trim().toUpperCase();
+  const district = (n.match(/DISTRICT,?\s*(\d+)/) || [])[1];
+  if (n === "GOVERNOR") return { category: "gov", district: null, label: "Governor", order: 1 };
+  if (/^U\.?\s*S\.?\s*SENATOR/.test(n)) return { category: "sen", district: null, label: "U.S. Senate", order: 1 };
+  if (/^U\.?\s*S\.?\s*REPRESENTATIVE/.test(n)) return { category: "house", district: district ? +district : null, label: district ? `U.S. House District ${+district}` : txName(n), order: 1 };
+  if (/^STATE (SENATOR|REPRESENTATIVE)/.test(n)) return { category: "leg", district: district ? +district : null, label: txName(n), order: /SENATOR/.test(n) ? 1 : 2 };
+  if (/PROPOSITION|AMENDMENT/.test(n)) return { category: "measure", district: null, label: txName(n), order: 1 };
+  if (/JUSTICE|JUDGE|COURT/.test(n)) return { category: "judicial", district: null, label: txName(n), order: 5 };
+  if (/^(LIEUTENANT GOVERNOR|ATTORNEY GENERAL|COMPTROLLER|COMMISSIONER|RAILROAD COMMISSIONER)/.test(n)) return { category: "statewide", district: null, label: txName(n), order: 2 };
+  return { category: "other", district: null, label: txName(n), order: 9 };
+}
+
+function txParty(p) {
+  const s = String(p || "").toUpperCase();
+  if (s === "W" || /WRITE/.test(s)) return { party: "O", writeIn: true };
+  return { party: normParty(s === "REP" || s === "REPUBLICAN" ? "R" : s === "DEM" || s === "DEMOCRATIC" ? "D" : s), writeIn: false };
+}
+
+// County.json: { "<5-digit FIPS>": { N: "ANDERSON", Races: { "<office id>": { ON, T, PR, TPR,
+//   C: { "<candidate id>": { N, P, V } } } } } }. Statewide totals are the sum of the counties.
+export function parseTexasCounties(county, home) {
+  const races = new Map();
+  for (const [fips, cty] of Object.entries(county || {})) {
+    if (!cty || !cty.Races) continue;
+    const cname = txName(cty.N);
+    const ck = countyKey(cname);
+    for (const [oid, r] of Object.entries(cty.Races)) {
+      let race = races.get(oid);
+      if (!race) {
+        const cls = classifyTx(r.ON);
+        race = {
+          id: `TX-${oid}`,
+          state: "TX",
+          category: cls.category,
+          name: cls.label,
+          district: cls.district,
+          order: cls.order * 1000 + (toNum(r.O) || 0),
+          candidates: [],
+          counties: {},
+          precinctsReporting: 0,
+          precinctsTotal: 0,
+          unitLabel: "polling places",
+          _cand: new Map(),
+        };
+        races.set(oid, race);
+      }
+      const cnty = (race.counties[ck] = { name: cname, votes: {}, total: 0, precinctsReporting: toNum(r.PR), precinctsTotal: toNum(r.TPR) });
+      race.precinctsReporting += cnty.precinctsReporting;
+      race.precinctsTotal += cnty.precinctsTotal;
+      for (const [cid, c] of Object.entries(r.C || {})) {
+        const key = `c${cid}`;
+        let cand = race._cand.get(key);
+        if (!cand) {
+          const p = txParty(c.P);
+          cand = { key, name: p.writeIn ? `${txName(c.N)} (write-in)` : txName(c.N), party: p.party, votes: 0 };
+          race._cand.set(key, cand);
+          race.candidates.push(cand);
+        }
+        const v = toNum(c.V);
+        cand.votes += v;
+        cnty.votes[key] = v;
+        cnty.total += v;
+      }
+    }
+  }
+  const out = [];
+  for (const race of races.values()) {
+    delete race._cand;
+    out.push(finishRace(race));
+  }
+  return sortRaces(out);
+}
+
+// Backup: the Secretary of State's plain results page (statewide totals only).
+export function parseTexasHtml(html, electionId = "53815") {
+  let body = String(html || "");
+  const start = body.indexOf(`collapse${electionId}" class`);
+  if (start >= 0) {
+    body = body.slice(start);
+    const next = body.indexOf('data-toggle="collapse"', 10);
+    if (next > 0) body = body.slice(0, next);
+  }
+  const strip = (s) => s.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;/g, "'").trim();
+  const races = [];
+  const re = /<div class="election">([\s\S]*?)<\/div>\s*<div class="polling">([\s\S]*?)<\/div>\s*<div>\s*<table[^>]*>([\s\S]*?)<\/table>/g;
+  let m;
+  let idx = 0;
+  while ((m = re.exec(body))) {
+    const title = strip(m[1]);
+    const pctIn = parseFloat((strip(m[2]).match(/([\d.]+)\s*%/) || [])[1] || "0");
+    const cls = classifyTx(title);
+    const cands = [];
+    const rowRe = /<tr>\s*<td class="party">([\s\S]*?)<\/td>\s*<td class="candidate">([\s\S]*?)<\/td>\s*<td class="ballot"\s*(?:\/>|>([\s\S]*?)<\/td>)/g;
+    let r;
+    while ((r = rowRe.exec(m[3]))) {
+      const p = txParty(strip(r[1]));
+      const name = txName(strip(r[2]));
+      cands.push({ key: slug(`${name}-${p.party}`), name: p.writeIn ? `${name} (write-in)` : name, party: p.party, votes: toNum(strip(r[3] || "")) });
+    }
+    if (!cands.length) continue;
+    races.push(
+      finishRace({
+        id: `TX-${slug(title)}`,
+        state: "TX",
+        category: cls.category,
+        name: cls.label,
+        district: cls.district,
+        order: cls.order * 1000 + idx++,
+        candidates: cands,
+        counties: null,
+        precinctsReporting: Math.round(pctIn * 10),
+        precinctsTotal: 1000,
+        unitLabel: "polling places",
+      }),
+    );
+  }
+  return sortRaces(races);
+}

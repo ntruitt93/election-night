@@ -1,4 +1,6 @@
 import {
+  parseTexasCounties,
+  parseTexasHtml,
   parseFlorida,
   parseGeorgiaSummary,
   applyGeorgiaBreakdown,
@@ -20,10 +22,14 @@ const GA_DATE = params.get("gadate") || "2026-11-03";
 // Senate/House control tabs are parked for now; add ?congress=1 to the URL to see them.
 const CONGRESS = params.has("congress");
 
+// Texas is built but hidden until it's been checked against live data; ?tx=1 shows it.
+const TX = params.has("tx");
 const STATES = {
-  ga: { code: "GA", name: "Georgia" },
-  fl: { code: "FL", name: "Florida" },
+  ga: { code: "GA", name: "Georgia", fips: "13" },
+  fl: { code: "FL", name: "Florida", fips: "12" },
+  tx: { code: "TX", name: "Texas", fips: "48" },
 };
+const STATE_KEYS = ["ga", "fl", ...(TX ? ["tx"] : [])];
 
 const PARTY = {
   R: { label: "Rep.", color: "var(--rep)" },
@@ -37,7 +43,7 @@ const PARTY = {
 // ------------------------------------------------------------------ state
 
 const app = {
-  data: { ga: null, fl: null }, // { races, status: {ok, message}, fetchedAt, sourceTime }
+  data: { ga: null, fl: null, tx: null }, // { races, status: {ok, message}, fetchedAt, sourceTime }
   expanded: new Set(), // race cards showing every candidate
   control: null, // shared seat calls from /api/control
   controlError: null,
@@ -110,6 +116,35 @@ async function loadGeorgia() {
     status: { ok: true, stale: data.stale },
     sourceTime: (m && (m.lastUpdated || m.asOf)) || data.fetchedAt,
   };
+}
+
+async function loadTexas() {
+  const page = getText("/api/tx/page").catch(() => null);
+  try {
+    const county = await getJSON("/api/tx/County.json");
+    const races = parseTexasCounties(county.body);
+    // The plain results page has each race's share of polling places reporting.
+    const p = await page;
+    if (p) {
+      const byName = new Map(parseTexasHtml(p.body).map((r) => [`${r.category}|${r.name}`, r]));
+      for (const r of races) {
+        const h = byName.get(`${r.category}|${r.name}`);
+        if (h) {
+          r.precinctsReporting = h.precinctsReporting;
+          r.precinctsTotal = h.precinctsTotal;
+        }
+      }
+    }
+    return { races, status: { ok: true, stale: county.stale }, sourceTime: county.fetchedAt };
+  } catch (err) {
+    const p = await page;
+    if (!p) throw err;
+    return {
+      races: parseTexasHtml(p.body),
+      status: { ok: true, message: "Texas's county-by-county data isn't available right now, so Texas shows statewide totals only." },
+      sourceTime: p.fetchedAt,
+    };
+  }
 }
 
 async function loadFlorida() {
@@ -190,7 +225,8 @@ async function loadAll() {
       app.data.ga = demoData("GA", ga.races || [], gaGeo);
       app.data.fl = demoData("FL", fl.races || [], flGeo);
     } else {
-      const [ga, fl] = await Promise.all([settle(loadGeorgia()), settle(loadFlorida())]);
+      const [ga, fl, tx] = await Promise.all([settle(loadGeorgia()), settle(loadFlorida()), TX ? settle(loadTexas()) : null]);
+      if (tx) app.data.tx = mergeStatus(app.data.tx, tx, "Texas");
       app.data.ga = mergeStatus(app.data.ga, ga, "Georgia");
       app.data.fl = mergeStatus(app.data.fl, fl, "Florida");
     }
@@ -249,7 +285,7 @@ function reportingText(race) {
   if (!race.precinctsTotal) return race.total > 0 ? "Reporting" : "No votes yet";
   const p = pct(race.precinctsReporting, race.precinctsTotal);
   if (race.precinctsReporting === 0) return race.total > 0 ? "Early votes in" : "No votes yet";
-  return `${p >= 99.95 ? "100" : p.toFixed(p < 10 ? 1 : 0)}% of precincts in`;
+  return `${p >= 99.95 ? "100" : p.toFixed(p < 10 ? 1 : 0)}% of ${race.unitLabel || "precincts"} in`;
 }
 
 function leaderInfo(cands, total) {
@@ -422,6 +458,7 @@ function statusNotice(d) {
 const VOTER_LOOKUP = {
   ga: { label: "Georgia's My Voter Page", url: "https://mvp.sos.ga.gov/s/" },
   fl: { label: "Florida's voter lookup", url: "https://registration.elections.myflorida.com/CheckVoterStatus" },
+  tx: { label: "Texas's My Voter Portal", url: "https://teamrv-mvp.sos.texas.gov/MVP/mvp.do" },
 };
 const MY_CATEGORIES = ["gov", "sen", "statewide", "measure", "judicial", "house", "leg"];
 
@@ -495,16 +532,16 @@ async function renderMe() {
     return;
   }
 
-  const [zips, gaGeo, flGeo] = await Promise.all([loadZips(), loadGeo("ga"), loadGeo("fl")]);
-  const fipsList = zips[app.myZip];
-  if (!fipsList) {
-    $out.innerHTML = `<div class="notice">ZIP ${esc(app.myZip)} isn't in Georgia or Florida, or it's a P.O. box ZIP. Try the ZIP code where you live.</div>`;
+  const [zips, ...geos] = await Promise.all([loadZips(), ...STATE_KEYS.map(loadGeo)]);
+  const fipsList = (zips[app.myZip] || []).filter((f) => STATE_KEYS.some((k) => f.startsWith(STATES[k].fips)));
+  if (!fipsList.length) {
+    $out.innerHTML = `<div class="notice">ZIP ${esc(app.myZip)} isn't in ${STATE_KEYS.map((k) => STATES[k].name).join(" or ")}, or it's a P.O. box ZIP. Try the ZIP code where you live.</div>`;
     return;
   }
-  const geoByFips = new Map([...gaGeo.counties, ...flGeo.counties].map((c) => [c.fips, c]));
+  const geoByFips = new Map(geos.flatMap((g) => g.counties).map((c) => [c.fips, c]));
   if (!app.myCounty || !fipsList.includes(app.myCounty)) app.myCounty = fipsList[0];
   const fips = app.myCounty;
-  const stateKey = fips.startsWith("13") ? "ga" : "fl";
+  const stateKey = STATE_KEYS.find((k) => fips.startsWith(STATES[k].fips));
   const county = geoByFips.get(fips);
   const ck = countyKey(county.name);
 
@@ -666,7 +703,7 @@ function renderOverview() {
   if (CONGRESS) {
     out.push(`<section class="state-section ctl-strip"><div class="state-head"><h2>Congress</h2></div>${controlStatus()}${controlMini("senate")}${controlMini("house")}</section>`);
   }
-  for (const key of ["ga", "fl"]) {
+  for (const key of STATE_KEYS) {
     const d = app.data[key];
     const st = STATES[key];
     out.push(`<section class="state-section"><div class="state-head"><h2>${st.name}</h2><a href="#${key}">County map and all races</a></div>`);
@@ -926,7 +963,7 @@ function lastName(name) {
 function readHash() {
   const h = decodeURIComponent(location.hash.replace(/^#/, ""));
   const [view, raceId] = h.split(/:(.*)/s);
-  app.view = ["me", "ga", "fl", ...(CONGRESS ? ["senate", "house"] : [])].includes(view) ? view : "overview";
+  app.view = ["me", ...STATE_KEYS, ...(CONGRESS ? ["senate", "house"] : [])].includes(view) ? view : "overview";
   if (raceId && (view === "ga" || view === "fl")) {
     if (app.selected[view] !== raceId) {
       app.county[view] = null;
@@ -954,7 +991,7 @@ function renderChrome() {
     $updated.textContent = `Updated ${timeAgo(app.lastLoad)}${autoRefreshOn() ? `, next in ${next}s` : ""}`;
   }
   const bits = [];
-  for (const key of ["ga", "fl"]) {
+  for (const key of STATE_KEYS) {
     const d = app.data[key];
     if (!d) continue;
     const name = STATES[key].name;
@@ -994,6 +1031,10 @@ window.addEventListener("hashchange", () => {
 $refresh.addEventListener("click", () => loadAll());
 
 if (DEMO) document.getElementById("demo-banner").hidden = false;
+if (TX) {
+  document.querySelectorAll(".tx-tab").forEach((a) => (a.hidden = false));
+  document.querySelector(".title-states").textContent = "Georgia, Florida & Texas";
+}
 if (CONGRESS) document.querySelectorAll(".congress-tab").forEach((a) => (a.hidden = false));
 restoreMine();
 readHash();

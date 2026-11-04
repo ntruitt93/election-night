@@ -85,6 +85,18 @@ async function handleApi(url, ctx) {
   // /api/health -> quick check that both upstream sites answer
   // /api/check-texas -> one request to Texas's official results site, to see
   // whether it answers automated requests or shows a bot check.
+  // /api/tx/County.json, /api/tx/Home.json -> Texas data files for tonight (version found automatically)
+  // /api/tx/page -> the Secretary of State's plain results page (backup, statewide totals)
+  if (parts[0] === "tx" && parts.length === 2) {
+    if (parts[1] === "page") return proxy("https://electionresults.sos.state.tx.us/results.html", "text", ctx);
+    if (["County.json", "Home.json", "OfficeSummary.json"].includes(parts[1])) {
+      const ver = await txVersion();
+      if (!ver) return json({ error: "Texas hasn't published tonight's data files yet" }, 503);
+      const S = "https://results.texas-election.com/static/data";
+      return proxy(`${S}/election/${TX_ELECTION_ID}/${ver}/${parts[1]}`, "json", ctx, `tx-${parts[1]}`);
+    }
+  }
+
   if (parts[0] === "check-texas") {
     const S = "https://results.texas-election.com/static/data";
     const out = {};
@@ -117,6 +129,24 @@ async function handleApi(url, ctx) {
 // Fetch an upstream URL through the edge cache. Serves a fresh cached copy when
 // one exists, otherwise fetches; if the fetch fails, serves the last good copy.
 const TX_ELECTION_ID = "53815"; // Texas SOS id for the Nov 3, 2026 general election
+
+// Texas bumps a data version number with every update; read it, briefly cached.
+let txVersionCache = { at: 0, v: null };
+async function txVersion() {
+  if (Date.now() - txVersionCache.at < 20000 && txVersionCache.v) return txVersionCache.v;
+  try {
+    const res = await fetch(`https://results.texas-election.com/static/data/election/${TX_ELECTION_ID}/version.json`, {
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal: AbortSignal.timeout(8000),
+      cf: { cacheTtl: 0 },
+    });
+    if (res.ok) {
+      const j = await res.json();
+      if (j && j.___versionNo != null) txVersionCache = { at: Date.now(), v: String(j.___versionNo) };
+    }
+  } catch {}
+  return txVersionCache.v;
+}
 
 // One request to a Texas results URL: did it answer with data, or a bot check?
 async function txCheck(target, sizeOnly = false) {
@@ -220,7 +250,8 @@ function validate(status, contentType, body, kind) {
   // A bot-check or error page comes back as HTML; don't cache it as data.
   const head = new TextDecoder().decode(body.slice(0, 200)).trimStart();
   if (/text\/html/i.test(contentType) || head.startsWith("<")) throw new Error("got an HTML page instead of data");
-  if (kind === "json") JSON.parse(new TextDecoder().decode(body));
+  // Cheap shape check (parsing a multi-megabyte file here would cost CPU time on every update).
+  if (kind === "json" && !/^[{[]/.test(head)) throw new Error("not JSON");
 }
 
 async function probe(upstream, kind) {
