@@ -83,6 +83,39 @@ async function handleApi(url, ctx) {
   }
 
   // /api/health -> quick check that both upstream sites answer
+  // /api/check-texas -> one request to Texas's official results site, to see
+  // whether it answers automated requests or shows a bot check.
+  if (parts[0] === "check-texas") {
+    const target = "https://results.texas-election.com/";
+    const started = Date.now();
+    try {
+      const res = await fetch(target, {
+        headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/json" },
+        signal: AbortSignal.timeout(15000),
+        cf: { cacheTtl: 0 },
+        redirect: "follow",
+      });
+      const text = await res.text();
+      const challenged =
+        res.headers.get("cf-mitigated") === "challenge" || /just a moment|cf-chl|challenge-platform|attention required/i.test(text);
+      const title = (text.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || null;
+      return json({
+        checked: target,
+        verdict: challenged ? "blocked by a bot check" : res.ok ? "reachable" : `answered with HTTP ${res.status}`,
+        status: res.status,
+        botCheck: challenged,
+        finalUrl: res.url,
+        contentType: res.headers.get("content-type"),
+        server: res.headers.get("server"),
+        pageTitle: title && title.trim().slice(0, 120),
+        bytes: text.length,
+        ms: Date.now() - started,
+      });
+    } catch (err) {
+      return json({ checked: target, verdict: "no answer", error: short(err), ms: Date.now() - started });
+    }
+  }
+
   if (parts[0] === "health") {
     const [ga, fl] = await Promise.all([
       probe(`${GA_API}/jurisdictions/Georgia`, "json"),
